@@ -1,0 +1,180 @@
+import logging
+
+import lightning as L
+import numpy as np
+import torch
+import torchinfo
+import tqdm
+from TSB_AD.utils.dataset import ForecastDataset, ReconstructDataset
+from TSB_AD.utils.torch_utility import get_gpu, EarlyStoppingTorch
+from lightning.pytorch.callbacks import EarlyStopping
+from lightning.pytorch.utilities.types import OptimizerLRScheduler, STEP_OUTPUT
+from torch import nn, optim
+from torch import nn, optim
+from torch.nn import MSELoss
+from torch.nn.functional import mse_loss
+from torch.utils.data import DataLoader
+from typing import Any
+from xlstm import xLSTMBlockStackConfig, mLSTMBlockConfig, mLSTMLayerConfig, sLSTMBlockConfig, sLSTMLayerConfig, \
+    FeedForwardConfig, xLSTMBlockStack
+
+
+def create_config(window_size, embedding_dim=55):
+    return xLSTMBlockStackConfig(
+        mlstm_block=mLSTMBlockConfig(
+            mlstm=mLSTMLayerConfig(
+                conv1d_kernel_size=8, qkv_proj_blocksize=5, num_heads=4, round_proj_up_dim_up=False,
+                round_proj_up_to_multiple_of=5, embedding_dim=embedding_dim,
+            )
+        ),
+        slstm_block=sLSTMBlockConfig(
+            slstm=sLSTMLayerConfig(
+                backend="vanilla",
+                num_heads=4,
+                conv1d_kernel_size=4,
+                bias_init="powerlaw_blockdependent",
+            ),
+            feedforward=FeedForwardConfig(proj_factor=1.3, act_fn="gelu", embedding_dim=embedding_dim),
+        ),
+        context_length=window_size,
+        num_blocks=3,
+        embedding_dim=embedding_dim,
+        slstm_at=[1],
+    )
+
+
+class xLSTMADModule(L.LightningModule):
+    def __init__(self, embedding_dim: int, features_no: int, window_size: int, lr: float = 0.001):
+        super(xLSTMADModule, self).__init__()
+        self.window_size = window_size
+        self.features_no = features_no
+        self.lr = lr
+
+        xlstm_cfg = create_config(window_size=window_size, embedding_dim=embedding_dim)
+        self.encoder = xLSTMBlockStack(xlstm_cfg)
+        self.decoder = xLSTMBlockStack(xlstm_cfg)
+
+        self.input_projection = nn.Linear(features_no, embedding_dim)
+        self.output_projection = nn.Linear(embedding_dim, features_no)
+        self.gelu = nn.GELU()
+
+        self.loss = MSELoss()
+        self.val_loss = MSELoss()
+
+    def forward(self, x):
+        projected_input = self.input_projection(x)
+        encoder_output = self.encoder(projected_input)
+        decoder_output = self.decoder(encoder_output)
+        outputs = torch.zeros(self.window_size, x.shape[0], self.features_no).to(self.device)
+
+        for step in range(self.window_size):
+            output_activation = self.gelu(decoder_output[:, step, :])
+            output_projected = self.output_projection(output_activation)
+            outputs[step] = output_projected
+
+        outputs = outputs.reshape(outputs.shape[1], outputs.shape[0], outputs.shape[2])
+        return outputs
+
+    def training_step(self, batch, batch_idx):
+        x, _ = batch
+        # x = x.permute(1, 0, 2)
+        output = self.forward(x)
+        loss = self.loss(output, x)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, _ = batch
+        # x = x.permute(1, 0, 2)
+        output = self.forward(x)
+        loss = self.val_loss(output, x)
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        return loss
+
+    def predict_step(self, batch, batch_idx) -> Any:
+        x, target = batch
+        reconstruction = self.forward(x)
+        anomaly_scores = torch.mean(mse_loss(reconstruction, target, reduction='none'), dim=(1, 2))
+        return anomaly_scores
+
+    def configure_optimizers(self) -> OptimizerLRScheduler:
+        optimizer = optim.Adam(self.parameters(), lr=self.lr)
+        return optimizer
+
+
+class xLSTMADNoAR:
+    def __init__(self, model: L.LightningModule, window_size: int = 100, validation_size: float = 0.2,
+                 batch_size: int = 128):
+        self.window_size = window_size
+        self.validation_size = validation_size
+        self.batch_size = batch_size
+        self.model = model
+
+    def fit(self, data):
+        train_data = data[:int((1 - self.validation_size) * len(data))]
+        valid_data = data[int((1 - self.validation_size) * len(data)):]
+
+
+        print('train data size:', len(train_data))
+        print('valid data size:', len(valid_data))
+
+        train_loader = DataLoader(
+            ReconstructDataset(train_data, window_size=self.window_size),
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=4
+        )
+
+        valid_loader = DataLoader(
+            ReconstructDataset(valid_data, window_size=self.window_size),
+            batch_size=4 * self.batch_size,
+            shuffle=False,
+            num_workers=4
+        )
+
+        trainer = L.Trainer(
+            max_epochs=1,
+            accelerator="gpu",
+            callbacks=[EarlyStopping(monitor="val_loss", patience=3, mode="min")],
+            logger=True,
+            enable_progress_bar=True,
+            limit_train_batches=5
+        )
+
+        trainer.fit(self.model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
+
+    def decision_function(self, data):
+        data_loader = DataLoader(
+            ReconstructDataset(data, window_size=self.window_size),
+            batch_size=4 * self.batch_size,
+            shuffle=False,
+            num_workers=4,
+        )
+
+        trainer = L.Trainer(
+            accelerator="gpu",
+            logger=True,
+            enable_checkpointing=False,
+            # limit_predict_batches=3
+        )
+
+        self.model.eval()
+        anomaly_scores = np.zeros(len(data))
+
+        with torch.no_grad():
+            preds = trainer.predict(self.model, dataloaders=data_loader)
+
+        scores = torch.concat(preds)
+        if scores.shape[0] < len(data):
+            logging.info("Adjusting anomaly scores length to match data length.")
+            padded_decision_scores = np.zeros(len(data))
+            padded_decision_scores[: self.window_size - 1] = scores[0]
+            padded_decision_scores[self.window_size- 1:] = scores
+            return padded_decision_scores
+
+        return scores.numpy()
+
+    def param_statistic(self, save_file):
+        model_stats = torchinfo.summary(self.model, (self.batch_size, self.window_size), verbose=0)
+        with open(save_file, 'w') as f:
+            f.write(str(model_stats))

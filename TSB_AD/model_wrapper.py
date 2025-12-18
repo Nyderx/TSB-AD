@@ -5,7 +5,7 @@ from .utils.slidingWindows import find_length_rank
 Unsupervise_AD_Pool = ['FFT', 'SR', 'NORMA', 'Series2Graph', 'Sub_IForest', 'IForest', 'LOF', 'Sub_LOF', 'POLY', 'MatrixProfile', 'Sub_PCA', 'PCA', 'HBOS', 
                         'Sub_HBOS', 'KNN', 'Sub_KNN','KMeansAD', 'KMeansAD_U', 'KShapeAD', 'COPOD', 'CBLOF', 'COF', 'EIF', 'RobustPCA', 'Lag_Llama', 'TimesFM', 'Chronos', 'MOMENT_ZS']
 Semisupervise_AD_Pool = ['Left_STAMPi', 'SAND', 'MCD', 'Sub_MCD', 'OCSVM', 'Sub_OCSVM', 'AutoEncoder', 'CNN', 'LSTMAD', 'TranAD', 'USAD', 'OmniAnomaly', 
-                        'AnomalyTransformer', 'TimesNet', 'FITS', 'Donut', 'OFA', 'MOMENT_FT', 'M2N2', 'xLSTMAD']
+                        'AnomalyTransformer', 'TimesNet', 'FITS', 'Donut', 'OFA', 'MOMENT_FT', 'M2N2', 'xLSTMAD', 'xLSTMAD_NoAR']
 
 def run_Unsupervise_AD(model_name, data, **kwargs):
     try:
@@ -410,6 +410,15 @@ def run_xLSTMAD(data_train, data_test, window_size=100, lr=0.005, batch_size=32,
     from .models.xLSTMAD import xLSTMAD, xLSTMADModule
     model = xLSTMADModule(embedding_dim=embedding_dim, window_size=window_size, lr=lr, features_no=data_test.shape[1])
     clf = xLSTMAD(model=model, window_size=window_size, batch_size=batch_size)
+    clf.fit(data_train)
+    score = clf.decision_function(data_test)
+    return score.ravel()
+
+
+def run_xLSTMAD_NoAR(data_train, data_test, window_size=100, lr=0.005, batch_size=32, embedding_dim=40):
+    from .models.xLSTMAD_noAR import xLSTMADNoAR, xLSTMADModule
+    model = xLSTMADModule(embedding_dim=embedding_dim, window_size=window_size, lr=lr, features_no=data_test.shape[1])
+    clf = xLSTMADNoAR(model=model, window_size=window_size, batch_size=batch_size)
     clf.fit(data_train)
     score = clf.decision_function(data_test)
     return score.ravel()
