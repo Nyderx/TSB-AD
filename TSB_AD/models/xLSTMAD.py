@@ -1,3 +1,5 @@
+import logging
+
 import lightning as L
 import numpy as np
 import torch
@@ -133,11 +135,12 @@ class xLSTMAD:
         )
 
         trainer = L.Trainer(
-            max_epochs=50,
+            max_epochs=1,
             accelerator="gpu",
             callbacks=[EarlyStopping(monitor="train_loss", patience=3, mode="min")],
             logger=True,
             enable_progress_bar=True,
+            limit_train_batches=5
         )
 
         trainer.fit(self.model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
@@ -165,7 +168,11 @@ class xLSTMAD:
 
         scores = torch.concat(preds)
         if scores.shape[0] < len(data):
-            raise ValueError("The length of the anomaly scores is less than the length of the data.")
+            logging.info("Adjusting anomaly scores length to match data length.")
+            padded_decision_scores = np.zeros(len(data))
+            padded_decision_scores[: self.window_size - 1] = scores[0]
+            padded_decision_scores[self.window_size- 1:] = scores
+            return padded_decision_scores
 
         return scores.numpy()
 
