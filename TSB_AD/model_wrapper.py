@@ -41,8 +41,8 @@ def run_Semisupervise_AD(model_name, data_train, data_test, **kwargs):
 def run_FFT(data, ifft_parameters=5, local_neighbor_window=21, local_outlier_threshold=0.6, max_region_size=50, max_sign_change_distance=10):
     from .models.FFT import FFT
     clf = FFT(ifft_parameters=ifft_parameters, local_neighbor_window=local_neighbor_window, local_outlier_threshold=local_outlier_threshold, max_region_size=max_region_size, max_sign_change_distance=max_sign_change_distance)
-    clf.fit(data)  
-    score = clf.decision_scores_ 
+    clf.fit(data)
+    score = clf.decision_scores_
     return score.ravel()
 
 def run_Sub_IForest(data, periodicity=1, n_estimators=100, max_features=1, n_jobs=1):

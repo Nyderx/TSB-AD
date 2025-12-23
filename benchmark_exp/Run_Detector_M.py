@@ -10,6 +10,8 @@ from TSB_AD.evaluation.metrics import get_metrics
 from TSB_AD.utils.slidingWindows import find_length_rank
 from TSB_AD.model_wrapper import *
 from TSB_AD.HP_list import Optimal_Multi_algo_HP_dict
+import pathlib
+
 
 # seeding
 seed = 2024
@@ -48,7 +50,7 @@ if __name__ == '__main__':
 
     write_csv = []
     for filename in file_list:
-        if os.path.exists(target_dir+'/'+filename.split('.')[0]+'.npy'): continue
+        # if os.path.exists(target_dir+'/'+filename.split('.')[0]+'.npy'): continue
         print('Processing:{} by {}'.format(filename, args.AD_Name))
 
         file_path = os.path.join(args.dataset_dir, filename)
@@ -98,4 +100,6 @@ if __name__ == '__main__':
             col_w.insert(0, 'Time')
             col_w.insert(0, 'file')
             w_csv = pd.DataFrame(write_csv, columns=col_w)
+            pathlib.Path(args.save_dir).mkdir(parents=True, exist_ok=True)
+
             w_csv.to_csv(f'{args.save_dir}/{args.AD_Name}.csv', index=False)

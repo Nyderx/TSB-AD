@@ -7,7 +7,11 @@ import torchinfo
 import tqdm
 from TSB_AD.utils.dataset import ForecastDataset, ReconstructDataset
 from TSB_AD.utils.torch_utility import get_gpu, EarlyStoppingTorch
+<<<<<<< HEAD
 from lightning.pytorch.callbacks import EarlyStopping
+=======
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+>>>>>>> f8e9408 (WIP - NoAR xLSTMAD)
 from lightning.pytorch.utilities.types import OptimizerLRScheduler, STEP_OUTPUT
 from torch import nn, optim
 from torch import nn, optim
@@ -29,7 +33,11 @@ def create_config(window_size, embedding_dim=55):
         ),
         slstm_block=sLSTMBlockConfig(
             slstm=sLSTMLayerConfig(
+<<<<<<< HEAD
                 backend="vanilla",
+=======
+                backend="cuda",
+>>>>>>> f8e9408 (WIP - NoAR xLSTMAD)
                 num_heads=4,
                 conv1d_kernel_size=4,
                 bias_init="powerlaw_blockdependent",
@@ -37,9 +45,15 @@ def create_config(window_size, embedding_dim=55):
             feedforward=FeedForwardConfig(proj_factor=1.3, act_fn="gelu", embedding_dim=embedding_dim),
         ),
         context_length=window_size,
+<<<<<<< HEAD
         num_blocks=3,
         embedding_dim=embedding_dim,
         slstm_at=[1],
+=======
+        num_blocks=5,
+        embedding_dim=embedding_dim,
+        slstm_at=[1, 2, 3],
+>>>>>>> f8e9408 (WIP - NoAR xLSTMAD)
     )
 
 
@@ -60,6 +74,10 @@ class xLSTMADModule(L.LightningModule):
 
         self.loss = MSELoss()
         self.val_loss = MSELoss()
+<<<<<<< HEAD
+=======
+        self.save_hyperparameters()
+>>>>>>> f8e9408 (WIP - NoAR xLSTMAD)
 
     def forward(self, x):
         projected_input = self.input_projection(x)
@@ -132,6 +150,7 @@ class xLSTMADNoAR:
             num_workers=4
         )
 
+<<<<<<< HEAD
         trainer = L.Trainer(
             max_epochs=1,
             accelerator="gpu",
@@ -143,6 +162,31 @@ class xLSTMADNoAR:
 
         trainer.fit(self.model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
 
+=======
+        checkpoint_cb = ModelCheckpoint(
+            monitor="val_loss",
+            save_top_k=1,
+            save_last=True,
+            mode="min"
+        )
+
+        trainer = L.Trainer(
+            max_epochs=50,
+            accelerator="gpu",
+            callbacks=[
+                EarlyStopping(monitor="val_loss", patience=5, mode="min", min_delta=1e-4),
+                checkpoint_cb],
+            logger=True,
+            enable_progress_bar=True,
+        )
+
+        print(f'Trainer log file {trainer.log_dir}')
+        trainer.fit(self.model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
+
+        print(f'Loading best model from {checkpoint_cb.best_model_path}')
+        self.model = self.model.__class__.load_from_checkpoint(checkpoint_cb.best_model_path)
+
+>>>>>>> f8e9408 (WIP - NoAR xLSTMAD)
     def decision_function(self, data):
         data_loader = DataLoader(
             ReconstructDataset(data, window_size=self.window_size),

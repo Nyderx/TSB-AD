@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 from typing import Any
 from xlstm import xLSTMBlockStackConfig, mLSTMBlockConfig, mLSTMLayerConfig, sLSTMBlockConfig, sLSTMLayerConfig, \
     FeedForwardConfig, xLSTMBlockStack
-
+import logging
 
 def create_config(window_size, embedding_dim=55):
     return xLSTMBlockStackConfig(
@@ -29,7 +29,7 @@ def create_config(window_size, embedding_dim=55):
         ),
         slstm_block=sLSTMBlockConfig(
             slstm=sLSTMLayerConfig(
-                backend="vanilla",
+                backend="cuda",
                 num_heads=4,
                 conv1d_kernel_size=4,
                 bias_init="powerlaw_blockdependent",
@@ -103,6 +103,9 @@ class xLSTMADModule(L.LightningModule):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
+    def on_train_start(self):
+        print(f"Training on device: {self.device}")
+
 
 class xLSTMAD:
     def __init__(self, model: L.LightningModule, window_size: int = 100, validation_size: float = 0.2,
@@ -115,10 +118,6 @@ class xLSTMAD:
     def fit(self, data):
         train_data = data[:int((1 - self.validation_size) * len(data))]
         valid_data = data[int((1 - self.validation_size) * len(data)):]
-
-
-        print('train data size:', len(train_data))
-        print('valid data size:', len(valid_data))
 
         train_loader = DataLoader(
             ReconstructDataset(train_data, window_size=self.window_size),
