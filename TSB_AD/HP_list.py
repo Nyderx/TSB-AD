@@ -84,7 +84,11 @@ Multi_algo_HP_dict = {
     },    
     'OFA': {
         'win_size': [50, 100, 150]
-    } 
+    },
+    'xLSTMAD_NoAR': {
+        'window_size': [50, 100, 150],
+        'lr': [0.0004, 0.0008]
+    },
 }
 
 

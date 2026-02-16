@@ -61,6 +61,10 @@ class xLSTMADModule(L.LightningModule):
         self.loss = MSELoss()
         self.val_loss = MSELoss()
         self.save_hyperparameters()
+        self.t_l_sum = 0.0
+        self.v_l_sum = 0.0
+        self.t_samples = 0
+        self.v_samples = 0
 
     def forward(self, x):
         projected_input = self.input_projection(x)
@@ -81,6 +85,8 @@ class xLSTMADModule(L.LightningModule):
         # x = x.permute(1, 0, 2)
         output = self.forward(x)
         loss = self.loss(output, x)
+        self.t_l_sum += loss.item() * len(x)
+        self.t_samples += len(x)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
 
@@ -89,8 +95,20 @@ class xLSTMADModule(L.LightningModule):
         # x = x.permute(1, 0, 2)
         output = self.forward(x)
         loss = self.val_loss(output, x)
+        self.v_samples += len(x)
+        self.v_l_sum += loss.item() * len(x)
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
         return loss
+
+    def on_train_epoch_end(self) -> None:
+        print(f'Epoch {self.current_epoch} - Train Loss: {self.t_l_sum:.6f}, Mean train loss: {self.t_l_sum / self.t_samples:.6f}')
+        self.t_samples = 0
+        self.t_l_sum = 0.0
+
+    def on_validation_epoch_end(self) -> None:
+        print(f'Epoch {self.current_epoch} - Val Loss: {self.v_l_sum:.6f}, Mean val loss: {self.v_l_sum / self.v_samples:.6f}')
+        self.v_l_sum = 0.0
+        self.v_samples = 0
 
     def predict_step(self, batch, batch_idx) -> Any:
         x, target = batch
@@ -137,7 +155,15 @@ class xLSTMADNoAR:
             monitor="val_loss",
             save_top_k=1,
             save_last=True,
-            mode="min"
+            mode="min")
+
+        trainer = L.Trainer(
+            max_epochs=50,
+            accelerator="gpu",
+            callbacks=[EarlyStopping(monitor="val_loss", patience=3, mode="min")],
+            logger=True,
+            enable_progress_bar=True,
+            limit_train_batches=5
         )
 
         trainer = L.Trainer(
