@@ -1,8 +1,8 @@
 import torch.nn as nn
 from xlstm.blocks.mlstm.layer import mLSTMLayer, mLSTMLayerConfig
 
-from models.xlstmad_tirex.tirex_slstm.cell import sLSTMBlockConfig
-from models.xlstmad_tirex.tirex_slstm.layer import sLSTMLayer
+from .tirex_slstm.cell import sLSTMBlockConfig
+from .tirex_slstm.layer import sLSTMLayer
 
 
 class xLSTM(nn.Module):

@@ -13,8 +13,8 @@ from torch.utils.data import DataLoader
 from pytorch_lightning.utilities.types import OptimizerLRScheduler
 import pytorch_lightning as pl
 
-from models.xlstmad_tirex.xLSTM import xLSTM
-from utils.dataset import ReconstructDataset
+from .xLSTM import xLSTM
+from ...utils.dataset import ReconstructDataset
 
 
 class xLSTMADTirexModule(pl.LightningModule):
@@ -161,14 +161,13 @@ class xLSTMADTirex:
             mode="min")
 
         trainer = pl.Trainer(
-            max_epochs=1,
+            max_epochs=50,
             accelerator="gpu",
             callbacks=[
                 EarlyStopping(monitor="val_loss", patience=5, mode="min", min_delta=1e-4),
                 checkpoint_cb],
             logger=True,
             enable_progress_bar=True,
-            limit_train_batches=5
         )
 
         print(f'Trainer log file {trainer.log_dir}')
