@@ -1,7 +1,6 @@
 import numpy as np
 import math
 
-from models.xlstmad_tirex.xLSTMAD_tirex import xLSTMADTirex
 from .utils.slidingWindows import find_length_rank
 
 Unsupervise_AD_Pool = ['FFT', 'SR', 'NORMA', 'Series2Graph', 'Sub_IForest', 'IForest', 'LOF', 'Sub_LOF', 'POLY', 'MatrixProfile', 'Sub_PCA', 'PCA', 'HBOS', 
@@ -427,7 +426,7 @@ def run_xLSTMAD_NoAR(data_train, data_test, window_size=100, lr=0.005, batch_siz
 
 
 def run_xLSTMAD_Tirex(data_train, data_test, window_size=100, lr=0.005, batch_size=32, embedding_dim=40):
-    from .models.xlstmad_tirex.xLSTMAD_tirex import xLSTMADTirexModule
+    from .models.xlstmad_tirex.xLSTMAD_tirex import xLSTMADTirexModule, xLSTMADTirex
     model = xLSTMADTirexModule(pred_len=window_size, lr=lr, feats=data_test.shape[1], hidden_dim=embedding_dim, num_layers=3)
     clf = xLSTMADTirex(model=model, window_size=window_size, batch_size=batch_size)
     clf.fit(data_train)
