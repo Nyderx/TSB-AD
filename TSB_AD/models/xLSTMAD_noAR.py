@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torchinfo
 import tqdm
-from TSB_AD.utils.dataset import ForecastDataset, ReconstructDataset
+from TSB_AD.utils.dataset import ForecastDataset, ReconstructDataset, ReconstructDatasetGoodNormalizer
 from TSB_AD.utils.torch_utility import get_gpu, EarlyStoppingTorch
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.utilities.types import OptimizerLRScheduler, STEP_OUTPUT
@@ -39,7 +39,7 @@ def create_config(window_size, embedding_dim=55):
         context_length=window_size,
         num_blocks=3,
         embedding_dim=embedding_dim,
-        slstm_at=[1, 2, 3],
+        slstm_at=[1, 2],
     )
 
 
@@ -143,15 +143,19 @@ class xLSTMADNoAR:
         print('train data size:', len(train_data))
         print('valid data size:', len(valid_data))
 
+        train_dataset = ReconstructDatasetGoodNormalizer(train_data, window_size=self.window_size)
+        self.mean = train_dataset.mean
+        self.std = train_dataset.std
+
         train_loader = DataLoader(
-            ReconstructDataset(train_data, window_size=self.window_size),
+            train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=4
         )
 
         valid_loader = DataLoader(
-            ReconstructDataset(valid_data, window_size=self.window_size),
+            ReconstructDatasetGoodNormalizer(valid_data, window_size=self.window_size, mean=self.mean, std=self.std),
             batch_size=4 * self.batch_size,
             shuffle=False,
             num_workers=4
@@ -162,15 +166,6 @@ class xLSTMADNoAR:
             save_top_k=1,
             save_last=True,
             mode="min")
-
-        trainer = L.Trainer(
-            max_epochs=50,
-            accelerator="gpu",
-            callbacks=[EarlyStopping(monitor="val_loss", patience=3, mode="min")],
-            logger=True,
-            enable_progress_bar=True,
-            limit_train_batches=5
-        )
 
         trainer = L.Trainer(
             max_epochs=50,
@@ -190,7 +185,7 @@ class xLSTMADNoAR:
 
     def decision_function(self, data):
         data_loader = DataLoader(
-            ReconstructDataset(data, window_size=self.window_size),
+            ReconstructDatasetGoodNormalizer(data, window_size=self.window_size, mean=self.mean, std=self.std),
             batch_size=4 * self.batch_size,
             shuffle=False,
             num_workers=4,
