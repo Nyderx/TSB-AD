@@ -37,7 +37,7 @@ def create_config(window_size, embedding_dim=55):
             feedforward=FeedForwardConfig(proj_factor=1.3, act_fn="gelu", embedding_dim=embedding_dim),
         ),
         context_length=window_size,
-        num_blocks=5,
+        num_blocks=3,
         embedding_dim=embedding_dim,
         slstm_at=[1, 2, 3],
     )
