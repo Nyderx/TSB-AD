@@ -29,7 +29,7 @@ def create_config(window_size, embedding_dim=55):
         ),
         slstm_block=sLSTMBlockConfig(
             slstm=sLSTMLayerConfig(
-                backend="vanilla",
+                backend="cuda",
                 num_heads=4,
                 conv1d_kernel_size=4,
                 bias_init="powerlaw_blockdependent",
@@ -61,20 +61,10 @@ class xLSTMADModule(L.LightningModule):
         self.loss = MSELoss()
         self.val_loss = MSELoss()
         self.save_hyperparameters()
-        self.t_l_sum = 0.0
-        self.v_l_sum = 0.0
-        self.t_samples = 0
-        self.v_samples = 0
 
     def forward(self, x):
         projected_input = self.input_projection(x)
         encoder_output = self.encoder(projected_input)
-        try:
-            encoder_step_output = self.encoder.step(projected_input)
-        except Exception as e:
-            print(e)
-            logging.error(f"Error during encoder step: {e}")
-
         decoder_output = self.decoder(encoder_output)
         outputs = torch.zeros(self.window_size, x.shape[0], self.features_no).to(self.device)
 
@@ -91,8 +81,6 @@ class xLSTMADModule(L.LightningModule):
         # x = x.permute(1, 0, 2)
         output = self.forward(x)
         loss = self.loss(output, x)
-        self.t_l_sum += loss.item() * len(x)
-        self.t_samples += len(x)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
 
