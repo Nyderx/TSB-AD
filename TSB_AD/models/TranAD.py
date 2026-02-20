@@ -20,7 +20,7 @@ from sklearn.preprocessing import MinMaxScaler
 import tqdm
 
 from .base import BaseDetector
-from ..utils.dataset import ReconstructDataset
+from ..utils.dataset import ReconstructDataset, ReconstructDatasetGoodNormalizer
 from ..utils.torch_utility import EarlyStoppingTorch, get_gpu
 
 class PositionalEncoding(nn.Module):
@@ -161,14 +161,19 @@ class TranAD(BaseDetector):
         tsTrain = data[:int((1-self.validation_size)*len(data))]
         tsValid = data[int((1-self.validation_size)*len(data)):]
 
+
+        train_dataset = ReconstructDatasetGoodNormalizer(tsTrain, window_size=self.win_size)
+        self.mean = train_dataset.mean
+        self.std = train_dataset.std
+
         train_loader = DataLoader(
-            dataset=ReconstructDataset(tsTrain, window_size=self.win_size),
+            dataset=train_dataset,
             batch_size=self.batch_size,
             shuffle=True
         )
         
         valid_loader = DataLoader(
-            dataset=ReconstructDataset(tsValid, window_size=self.win_size),
+            ReconstructDatasetGoodNormalizer(tsValid, window_size=self.win_size, mean=self.mean, std=self.std),
             batch_size=self.batch_size,
             shuffle=False
         )
@@ -244,7 +249,7 @@ class TranAD(BaseDetector):
 
     def decision_function(self, data):
         test_loader = DataLoader(
-            dataset=ReconstructDataset(data, window_size=self.win_size),
+            dataset=ReconstructDatasetGoodNormalizer(data, window_size=self.win_size, mean=self.mean, std=self.std),
             batch_size=self.batch_size,
             shuffle=False
         )
