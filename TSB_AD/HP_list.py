@@ -159,6 +159,7 @@ Optimal_Multi_algo_HP_dict = {
     'AxonAD': {'win_size': 100, 'd_model': 128, 'num_heads': 8, 'lr': 0.0005, 'kl_tail_k': 10, 'forecast_steps': 1},
     'KronAD': {},
     'KronAD_U': {},
+    'KronNet': {},
 }
 
 
@@ -378,4 +379,5 @@ Optimal_Uni_algo_HP_dict = {
     'VERITY_AD': {},
     'KronAD': {},
     'KronAD_U': {},
+    'KronNet': {},
 }
