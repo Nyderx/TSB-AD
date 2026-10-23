@@ -40,12 +40,18 @@ class CausalTCN(nn.Module):
 
 
 class KronNetModel(nn.Module):
-    def __init__(self, n_feats, d=32, heads=4, hidden=64, n_layers=5, beta_init=0.1):
+    def __init__(self, n_feats, d=32, heads=4, hidden=64, n_layers=5, beta_init=0.1, rff=None):
         super().__init__()
         self.d, self.heads = d, heads
         self.tcn = CausalTCN(n_feats, hidden, n_layers)
         self.key = nn.Linear(hidden, heads * d)
-        self.value = nn.Sequential(nn.Linear(n_feats, hidden), nn.GELU(), nn.Linear(hidden, heads * d))
+        if rff is None:
+            self.value = nn.Sequential(nn.Linear(n_feats, hidden), nn.GELU(), nn.Linear(hidden, heads * d))
+        else:  # fixed random Fourier features of x_t (as in KronAD); only the keys are learned
+            W, b = rff
+            self.register_buffer('rff_W', W)
+            self.register_buffer('rff_b', b)
+            self.value = lambda x: torch.cos(x @ self.rff_W + self.rff_b)
         self.beta_logit = nn.Parameter(torch.full((heads,), math.log(beta_init / (1 - beta_init))))
 
     def keys(self, x):  # x: (B, T, C) -> (B, T, H, d); k_t only sees x[..t-1]
@@ -112,7 +118,10 @@ def make_negatives(x, rng_gen):
 
 class KronNet:
     def __init__(self, window_size=64, d=32, heads=4, hidden=64, beta_init=0.1, lr=1e-3,
-                 n_iters=300, batch_size=32, seg_len=256, neg_weight=1.0, random_state=2024):
+                 n_iters=300, batch_size=32, seg_len=256, neg_weight=1.0, values='mlp',
+                 bw_mults=(0.5, 1.0, 2.0, 4.0), random_state=2024):
+        assert values in ('mlp', 'rff')
+        self.values, self.bw_mults = values, bw_mults
         self.n_layers = max(1, int(math.floor(math.log2((window_size - 1) / 2 + 1))))
         self.rf = 1 + 2 * (2 ** self.n_layers - 1)
         self.d, self.heads, self.hidden, self.beta_init = d, heads, hidden, beta_init
@@ -130,6 +139,16 @@ class KronNet:
     def _scale(self, X):
         return torch.tensor((X - self.med_) / self.scale_, dtype=torch.float32, device=self.device)
 
+    def _rff_params(self, X, gen):
+        """One RFF map per head, bandwidth = median pairwise distance of x_t times bw_mults[h % len]."""
+        Z = X[torch.randperm(len(X), device=X.device, generator=gen)[:512]]
+        D = torch.cdist(Z, Z)
+        bw = max(D[torch.triu(torch.ones_like(D), 1) > 0].median().item(), 1e-6) if len(Z) > 1 else 1.0
+        bws = torch.tensor([bw * self.bw_mults[h % len(self.bw_mults)] for h in range(self.heads)], device=X.device)
+        W = torch.randn(X.shape[1], self.heads, self.d, device=X.device, generator=gen) / bws[:, None]
+        b = 2 * math.pi * torch.rand(self.heads, self.d, device=X.device, generator=gen)
+        return W.flatten(1), b.flatten()
+
     def fit(self, X_train):
         X_train = np.asarray(X_train, dtype=float)
         torch.manual_seed(self.random_state)
@@ -137,7 +156,8 @@ class KronNet:
         self._fit_scaler(X_train)
         X = self._scale(X_train)
         T, C = X.shape
-        self.model = KronNetModel(C, self.d, self.heads, self.hidden, self.n_layers, self.beta_init).to(self.device)
+        rff = self._rff_params(X, gen) if self.values == 'rff' else None
+        self.model = KronNetModel(C, self.d, self.heads, self.hidden, self.n_layers, self.beta_init, rff).to(self.device)
         opt = torch.optim.Adam(self.model.parameters(), lr=self.lr)
         # each sample: rf steps of key context + L steps of recurrence
         L = int(min(self.seg_len, max(16, T - self.rf - 1)))
