@@ -5,7 +5,7 @@
 import pandas as pd
 import numpy as np
 import torch
-import random, argparse, time, os, logging
+import random, argparse, time, os, logging, json
 from TSB_AD.evaluation.metrics import get_metrics
 from TSB_AD.utils.slidingWindows import find_length_rank
 from TSB_AD.model_wrapper import *
@@ -35,6 +35,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_dir', type=str, default='eval/metrics/uni/')
     parser.add_argument('--save', type=bool, default=False)
     parser.add_argument('--AD_Name', type=str, default='IForest')
+    parser.add_argument('--HP', type=str, default=None, help='JSON dict merged over the optimal HPs (ablations)')
     args = parser.parse_args()
 
 
@@ -44,6 +45,7 @@ if __name__ == '__main__':
 
     file_list = pd.read_csv(args.file_lsit)['file_name'].values
     Optimal_Det_HP = Optimal_Uni_algo_HP_dict[args.AD_Name]
+    if args.HP: Optimal_Det_HP = {**Optimal_Det_HP, **json.loads(args.HP)}
     print('Optimal_Det_HP: ', Optimal_Det_HP)
 
     write_csv = []
