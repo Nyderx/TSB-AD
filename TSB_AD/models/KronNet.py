@@ -59,7 +59,7 @@ class KronNetModel(nn.Module):
                 self.register_buffer(f'kedges{h}', edges)
             self.key_w = [w for w, *_ in key_rff]
             # zero-initialised residual weight of the learned keys: at init the keys equal KronAD's
-            self.key_alpha = nn.Parameter(torch.zeros(heads))
+            self.key_alpha = nn.Parameter(torch.zeros(heads), requires_grad=tcn)
         if rff is None:
             self.value = nn.Sequential(nn.Linear(n_feats, hidden), nn.GELU(), nn.Linear(hidden, heads * d))
         else:  # fixed random Fourier features of x_t (as in KronAD); only the keys are learned
@@ -156,8 +156,9 @@ class KronNet:
     def __init__(self, window_size=64, d=32, heads=4, hidden=64, beta_init=0.1, lr=1e-3,
                  n_iters=300, batch_size=32, seg_len=256, neg_weight=1.0, values='mlp',
                  bw_mults=(0.5, 1.0, 2.0, 4.0), keys='tcn', win_mults=(0.5, 1.0, 2.0), n_seg=16,
-                 random_state=2024):
+                 learn_beta=True, random_state=2024):
         assert values in ('mlp', 'rff')
+        self.learn_beta = learn_beta
         assert keys in ('tcn', 'rff', 'rff+tcn')
         self.values, self.bw_mults = values, bw_mults
         self.keys, self.win_mults, self.n_seg = keys, win_mults, n_seg
@@ -226,7 +227,9 @@ class KronNet:
         key_rff = self._key_rff_params(X, X_train, gen) if self.keys != 'tcn' else None
         self.model = KronNetModel(C, self.d, self.heads, self.hidden, self.n_layers, self.beta_init, rff, key_rff,
                                   tcn=self.keys != 'rff').to(self.device)
-        opt = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+        self.model.beta_logit.requires_grad_(self.learn_beta)
+        params = [p for p in self.model.parameters() if p.requires_grad]
+        opt = torch.optim.Adam(params, lr=self.lr) if params else None
         # context the keys need before the first scored step
         self.ctx = max(self.rf if self.keys != 'rff' else 0, max((p[0] for p in key_rff or []), default=0))
         # each sample: ctx steps of key context + L steps of recurrence
@@ -234,7 +237,8 @@ class KronNet:
         burn = L // 4
         span = self.ctx + L
         self.model.train()
-        for it in range(self.n_iters):
+        loss = torch.tensor(float('nan'))
+        for it in range(self.n_iters if opt is not None else 0):
             starts = torch.randint(0, max(1, T - span + 1), (self.batch_size,), device=self.device, generator=gen)
             seg = torch.stack([X[s:s + span] for s in starts.tolist()])
             if seg.shape[1] < span:  # train prefix shorter than one span
