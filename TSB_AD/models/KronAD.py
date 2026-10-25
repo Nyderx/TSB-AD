@@ -29,11 +29,18 @@ from ..utils.slidingWindows import find_length_rank
 class KronAD:
     def __init__(self, win_mults=(0.5, 1.0, 2.0), n_seg=16, d=64, beta=0.5, tau=None,
                  norm='robust', rule='kron', gate=False, gate_k=3.0, bw_mult=1.0,
-                 smooth=False, pred_len=1, local_floor=0.1, ref='none', skip_q=None, chunk=2048,
-                 random_state=2024):
+                 smooth=False, pred_len=1, local_floor=0.1, ref='none', skip_q=None, val_mult=None,
+                 val_norm='none', val_mults=None, head_agg='mean', chunk=2048, random_state=2024):
         assert norm in ('robust', 'local', 'both')
         assert rule in ('kron', 'delta', 'hebb')
         assert ref in ('none', 'max', 'only')
+        assert val_norm in ('none', 'shape')
+        # val_mult: the value is the PAA of the next p = val_mult * w steps instead of x[t:t+pred_len];
+        # the error of each step is then spread over the p points its value window covers
+        # val_mults: several value lengths (0 = the point x_t), one head per (window, value length)
+        assert head_agg in ('mean', 'zmean', 'zmax')
+        self.val_mults = tuple(val_mults) if val_mults is not None else (0 if val_mult is None else val_mult,)
+        self.val_mult, self.val_norm, self.head_agg = val_mult, val_norm, head_agg
         self.ref = ref
         self.skip_q = skip_q
         self.S_ref_, self.thr_ = None, None
@@ -70,14 +77,28 @@ class KronAD:
         z = np.zeros((1, X.shape[1]))
         return np.concatenate([z, np.cumsum(X, 0)]), np.concatenate([z, np.cumsum(X ** 2, 0)])
 
-    def _raw_feats(self, X, cs, cs2, t, w, local):
-        """Key input (PAA of x[t-w:t]) and value input (x[t:t+p]) for time indices t."""
-        n_seg = min(self.n_seg, w)
-        edges = np.round(np.linspace(0, w, n_seg + 1)).astype(int)
-        lo = (t - w)[:, None] + edges[None, :-1]
-        hi = (t - w)[:, None] + edges[None, 1:]
-        seg = (cs[hi] - cs[lo]) / (hi - lo)[..., None]                  # (n, n_seg, C)
-        val = np.stack([X[t + j] for j in range(self.pred_len)], 1)     # (n, p, C)
+    def _paa(self, cs, start, length):
+        n_seg = min(self.n_seg, length)
+        edges = np.round(np.linspace(0, length, n_seg + 1)).astype(int)
+        lo = start[:, None] + edges[None, :-1]
+        hi = start[:, None] + edges[None, 1:]
+        return (cs[hi] - cs[lo]) / (hi - lo)[..., None]                  # (n, n_seg, C)
+
+    def _p(self, w, vm):
+        return self.pred_len if vm == 0 else max(1, int(round(vm * w)))
+
+    def _raw_feats(self, X, cs, cs2, t, w, local, vm):
+        """Key input (PAA of x[t-w:t]) and value input (x[t:t+p] or its PAA) for time indices t."""
+        seg = self._paa(cs, t - w, w)
+        if vm == 0:
+            val = np.stack([X[t + j] for j in range(self.pred_len)], 1)  # (n, p, C)
+        else:
+            p = self._p(w, vm)
+            val = self._paa(cs, t, p)
+            if self.val_norm == 'shape':  # z-normalise the value window: store its shape, not its level
+                mu = (cs[t + p] - cs[t]) / p
+                sd = np.sqrt(np.maximum((cs2[t + p] - cs2[t]) / p - mu ** 2, 0))
+                val = (val - mu[:, None]) / np.maximum(sd, self.local_floor)[:, None]
         if local:
             mu = (cs[t] - cs[t - w]) / w
             var = (cs2[t] - cs2[t - w]) / w - mu ** 2
@@ -113,11 +134,15 @@ class KronAD:
         for local in norms:
             for m in self.win_mults:
                 w = int(np.clip(round(base * m), 4, max(4, len(X_fit) // 4)))
-                t = np.arange(w, len(X_fit) - self.pred_len + 1)
-                t = rng.choice(t, size=min(len(t), 2048), replace=False)
-                Zk, Zv = self._raw_feats(X_fit, cs, cs2, t, w, local)
-                self.heads_.append(dict(w=w, local=local, k=self._rff_params(Zk, rng), v=self._rff_params(Zv, rng)))
+                for vm in self.val_mults:
+                    p = self._p(w, vm)
+                    t = np.arange(w, len(X_fit) - p + 1)
+                    t = rng.choice(t, size=min(len(t), 2048), replace=False)
+                    Zk, Zv = self._raw_feats(X_fit, cs, cs2, t, w, local, vm)
+                    self.heads_.append(dict(w=w, p=p, vm=vm, local=local, k=self._rff_params(Zk, rng),
+                                            v=self._rff_params(Zv, rng)))
         self.w_max_ = max(h['w'] for h in self.heads_)
+        self.p_max_ = max(h['p'] for h in self.heads_)
         self.smooth_win_ = base
         H, d = len(self.heads_), self.d
         self.S_ = np.zeros((H, d, d))
@@ -128,8 +153,8 @@ class KronAD:
     def _run(self, X, score, record=False):
         T = len(X)
         cs, cs2 = self._cumsums(X)
-        t_all = np.arange(self.w_max_, T - self.pred_len + 1)
-        out = np.full(T, np.nan)
+        t_all = np.arange(self.w_max_, T - self.p_max_ + 1)
+        Es = np.full((T, len(self.heads_)), np.nan) if score else None
         E = np.full((len(t_all), len(self.heads_)), np.nan) if record else None
         S_ref = self.S_ref_ if score else None
         thr = self.thr_ if score else None
@@ -138,7 +163,7 @@ class KronAD:
             t = t_all[a:a + self.chunk]
             K, V = [], []
             for h in self.heads_:
-                Zk, Zv = self._raw_feats(X, cs, cs2, t, h['w'], h['local'])
+                Zk, Zv = self._raw_feats(X, cs, cs2, t, h['w'], h['local'], h['vm'])
                 K.append(self._rff(Zk, *h['k']))
                 V.append(self._rff(Zv, *h['v']))
             K, V = np.stack(K, 1), np.stack(V, 1)  # (n, H, d)
@@ -190,8 +215,33 @@ class KronAD:
                 self.e_mu_ = self.e_mu_ + a_ * diff
                 self.e_var_ = (1 - a_) * (self.e_var_ + a_ * diff ** 2)
                 if score:
-                    out[t[i]] = np.maximum(e_s, 0).mean()
+                    Es[t[i]] = np.maximum(e_s, 0)
+        out = self._spread(Es, t_all) if score else None
         return (out, E) if record else out
+
+    def _spread(self, Es, t_all):
+        """Per head, score each point by the mean error of the value windows covering it; average heads."""
+        T = len(Es)
+        if len(t_all) == 0:
+            return np.full(T, np.nan)
+        t0, t1 = t_all[0], t_all[-1]
+        outs = []
+        for h, head in enumerate(self.heads_):
+            p = 1 if head['vm'] == 0 else head['p']
+            c = np.concatenate([[0.0], np.cumsum(np.nan_to_num(Es[t0:t1 + 1, h]))])
+            j = np.arange(T)
+            lo = np.clip(j - p + 1, t0, t1 + 1) - t0
+            hi = np.clip(j, t0 - 1, t1) - t0 + 1
+            cnt = hi - lo
+            outs.append(np.where(cnt > 0, (c[np.maximum(hi, 0)] - c[np.maximum(lo, 0)]) / np.maximum(cnt, 1), np.nan))
+        O = np.stack(outs, 1)
+        if self.head_agg == 'mean':
+            return O.mean(1)
+        # robust per-head standardisation so that a sharply firing head is not averaged away
+        med = np.nanmedian(O, 0)
+        iqr = np.subtract(*np.nanpercentile(O, [75, 25], 0))
+        Z = (O - med) / np.maximum(iqr, 1e-12)
+        return Z.max(1) if self.head_agg == 'zmax' else Z.mean(1)
 
     def fit(self, X_train):
         """Warm the memory on (assumed normal) training data without scoring."""
