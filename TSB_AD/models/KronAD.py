@@ -12,6 +12,14 @@ association with the Kronecker Delta Rule (Hartl et al., arXiv:2610.26834):
 
 With constant gates the decoupled form of the paper (target c / beta) is a
 reparameterisation of this coupled form, so only beta and c = 1 are used.
+
+A memory that never forgets absorbs long anomalies: after tens of steps a
+sustained level shift reads as familiar and only its onset is flagged. Two
+remedies need a train prefix (``fit``):
+  ref='max'/'only'  also read a reference copy of S frozen after the train
+                    prefix and score max(e, e_ref) per head (or e_ref alone);
+  skip_q            do not write pairs whose error exceeds the skip_q quantile
+                    of the errors on the second half of the train prefix.
 """
 import numpy as np
 
@@ -21,9 +29,14 @@ from ..utils.slidingWindows import find_length_rank
 class KronAD:
     def __init__(self, win_mults=(0.5, 1.0, 2.0), n_seg=16, d=64, beta=0.5, tau=None,
                  norm='robust', rule='kron', gate=False, gate_k=3.0, bw_mult=1.0,
-                 smooth=False, pred_len=1, local_floor=0.1, chunk=2048, random_state=2024):
+                 smooth=False, pred_len=1, local_floor=0.1, ref='none', skip_q=None, chunk=2048,
+                 random_state=2024):
         assert norm in ('robust', 'local', 'both')
         assert rule in ('kron', 'delta', 'hebb')
+        assert ref in ('none', 'max', 'only')
+        self.ref = ref
+        self.skip_q = skip_q
+        self.S_ref_, self.thr_ = None, None
         self.win_mults = win_mults
         self.n_seg = n_seg
         self.d = d
@@ -112,11 +125,14 @@ class KronAD:
         self.e_mu_, self.e_var_, self.n_seen_ = np.zeros(H), np.zeros(H), 0
 
     # ---------- memory recurrence ----------
-    def _run(self, X, score):
+    def _run(self, X, score, record=False):
         T = len(X)
         cs, cs2 = self._cumsums(X)
         t_all = np.arange(self.w_max_, T - self.pred_len + 1)
         out = np.full(T, np.nan)
+        E = np.full((len(t_all), len(self.heads_)), np.nan) if record else None
+        S_ref = self.S_ref_ if score else None
+        thr = self.thr_ if score else None
         S, f, beta = self.S_, self.forget, self.beta
         for a in range(0, len(t_all), self.chunk):
             t = t_all[a:a + self.chunk]
@@ -148,7 +164,21 @@ class KronAD:
                     g = 1.0 / (1.0 + np.exp(-(self.e_mu_ + self.gate_k * sd - e) / (0.5 * sd)))
                 else:
                     g = 1.0
+                if thr is not None:  # pairs that look anomalous are not written
+                    g = g * (e <= thr)
                 u = u * g if self.rule != 'delta' else u * np.reshape(g, (-1, 1))
+                if S_ref is not None:
+                    if self.rule == 'delta':
+                        e_ref = np.linalg.norm(v - np.einsum('hk,hkv->hv', k, S_ref), axis=1)
+                    elif self.rule == 'kron':
+                        e_ref = 1.0 - np.einsum('hk,hkv,hv->h', k, S_ref, v)
+                    else:
+                        e_ref = 1.0 - np.einsum('hk,hkv,hv->h', k, S_ref, v) / self.n_eff_ref_
+                    e_s = np.maximum(e, e_ref) if self.ref == 'max' else e_ref
+                else:
+                    e_s = e
+                if record:
+                    E[a + i] = e
                 if self.rule == 'delta':
                     S += beta * k[:, :, None] * u[:, None, :]
                 else:
@@ -160,8 +190,8 @@ class KronAD:
                 self.e_mu_ = self.e_mu_ + a_ * diff
                 self.e_var_ = (1 - a_) * (self.e_var_ + a_ * diff ** 2)
                 if score:
-                    out[t[i]] = np.maximum(e, 0).mean()
-        return out
+                    out[t[i]] = np.maximum(e_s, 0).mean()
+        return (out, E) if record else out
 
     def fit(self, X_train):
         """Warm the memory on (assumed normal) training data without scoring."""
@@ -169,7 +199,12 @@ class KronAD:
         self._fit_scaler(X_train)
         Xs = self._scale(X_train)
         self._build_heads(Xs)
-        self._run(Xs, score=False)
+        _, E = self._run(Xs, score=False, record=True)
+        if self.ref != 'none':
+            self.S_ref_, self.n_eff_ref_ = self.S_.copy(), self.n_eff_
+        if self.skip_q is not None:
+            E = E[len(E) // 2:]  # the memory starts empty: skip the first half of the warm-up
+            self.thr_ = np.quantile(E, self.skip_q, axis=0) if len(E) else None
         return self
 
     def decision_function(self, X):
